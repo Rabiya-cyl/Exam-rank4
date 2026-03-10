@@ -1,0 +1,98 @@
+#include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <signal.h>
+#include <errno.h>
+#include <sys/wait.h>
+#include <string.h>
+
+// Le handler de signal pour SIGALRM n'a rien besoin de faire,
+// sa seule présence suffit à interrompre l'appel système waitpid.
+void handle_alarm(int sig) {
+    (void)sig;
+}
+
+int sandbox(void (*f)(void), unsigned int timeout, bool verbose) {
+    pid_t pid;
+    int status;
+    struct sigaction sa = {0};
+
+    // 1. Fork pour créer un processus enfant
+    pid = fork();
+    if (pid == -1) {
+        // Erreur dans fork(), on retourne -1 comme demandé.
+        perror("fork");
+        return -1;
+    }
+
+    // 2. Code du processus enfant
+    if (pid == 0) {
+        // L'enfant exécute la fonction f.
+        f();
+        // Si f retourne, l'enfant se termine normalement avec le code 0.
+        exit(0);
+    }
+
+    // 3. Code du processus parent
+    // On configure le handler pour SIGALRM pour gérer le timeout.
+    sa.sa_handler = &handle_alarm;
+    if (sigaction(SIGALRM, &sa, NULL) == -1) {
+        perror("sigaction");
+        // On s'assure de ne pas laisser le processus enfant en zombie
+        kill(pid, SIGKILL);
+        waitpid(pid, NULL, 0);
+        return -1;
+    }
+
+    // On déclenche l'alarme
+    alarm(timeout);
+
+    // On attend l'enfant
+    if (waitpid(pid, &status, 0) == -1) {
+        // Si waitpid est interrompu par un signal, on vérifie si c'est bien à cause de l'alarme.
+        // Correction de la comparaison == au lieu de l'affectation =
+        if (errno == EINTR) {
+            // Le timeout a été atteint. On tue l'enfant qui est dans une boucle infinie.
+            kill(pid, SIGKILL);
+            // On attend l'enfant pour le nettoyer (éviter les zombies).
+            waitpid(pid, NULL, 0);
+            if (verbose) {
+                printf("Bad function: timed out after %u seconds\n", timeout);
+            }
+            return 0; // La fonction est "bad"
+        }
+        // Une autre erreur pour waitpid
+        perror("waitpid");
+        return -1;
+    }
+
+    // Si on arrive ici, l'enfant s'est terminé avant le timeout.
+    // On désactive l'alarme pour éviter qu'elle ne se déclenche plus tard.
+    alarm(0);
+
+    // On analyse le code de sortie de l'enfant
+    if (WIFEXITED(status)) {
+        int exit_code = WEXITSTATUS(status);
+        if (exit_code == 0) {
+            if (verbose) {
+                printf("Nice function!\n");
+            }
+            return 1; // La fonction est "nice"
+        } else {
+            if (verbose) {
+                printf("Bad function: exited with code %d\n", exit_code);
+            }
+            return 0; // La fonction est "bad"
+        }
+    } else if (WIFSIGNALED(status)) {
+        int term_sig = WTERMSIG(status);
+        if (verbose) {
+            printf("Bad function: %s\n", strsignal(term_sig));
+        }
+        return 0; // La fonction est "bad"
+    }
+
+    // Cas improbable, mais pour être complet
+    return -1;
+}
