@@ -1,5 +1,5 @@
 #include <stdio.h>
-#include <malloc.h> // change this to <stdlib.h>
+#include <stdlib.h>    // MODIFIED: use <stdlib.h> for calloc/free instead of <malloc.h>
 #include <ctype.h>
 
 typedef struct node {
@@ -13,11 +13,9 @@ typedef struct node {
     struct node *r;
 }   node;
 
-//node *n(**s);
-
 node    *new_node(node n)
 {
-    node *ret = calloc(1, sizeof(n));
+    node *ret = calloc(1, sizeof(*ret));  // MODIFIED: use sizeof(*ret) instead of sizeof(n)
     if (!ret)
         return (NULL);
     *ret = n;
@@ -41,12 +39,12 @@ void    unexpected(char c)
     if (c)
         printf("Unexpected token '%c'\n", c);
     else
-        printf("Unexpected end of file\n");
+        printf("Unexpected end of input\n");
 }
 
 int accept(char **s, char c)
 {
-    if (**s)
+    if (**s == c)
     {
         (*s)++;
         return (1);
@@ -61,87 +59,93 @@ int expect(char **s, char c)
     unexpected(**s);
     return (0);
 }
-node	*parse_addition(char **str);
-node	*parse_mult(char **str);
-node	*parse_par_or_val(char **str);
 
-node	*parse_addition(char **str)
+// ADDED: declarations of recursive parsing functions
+static node *parse_expr_r(char **s);
+static node *parse_term   (char **s);
+static node *parse_factor (char **s);
+
+// ADDED: parsing of a factor (digit or parenthesis)
+static node *parse_factor(char **s)
 {
-	node	*left;
-	node	*right;
-	node	tmp;
-
-	left = parse_mult(str);
-	while (**str == '+')
-	{
-		(*str)++;
-		right = parse_mult(str);
-		tmp.type = ADD;
-		tmp.l = left;
-		tmp.r = right;
-		left = new_node(tmp);
-	}
-	return (left);
+    if (isdigit((unsigned char)**s)) {
+        node n = { .type = VAL, .val = **s - '0', .l = NULL, .r = NULL };
+        (*s)++;
+        return new_node(n);
+    }
+    if (accept(s, '(')) {
+        node *e = parse_expr_r(s);
+        if (!e)
+            return NULL;
+        if (!expect(s, ')')) {
+            destroy_tree(e);
+            return NULL;
+        }
+        return e;
+    }
+    unexpected(**s);
+    return NULL;
 }
 
-node	*parse_mult(char **str)
+// ADDED: parsing of a term (multiplications)
+// This function is a COPY-PASTE of parse_expr_r,
+// you just have to REPLACE '+' by '*'
+// and REPLACE .type = ADD by .type = MULTI
+// and REPLACE parse_term by parse_factor
+static node *parse_term(char **s)
 {
-	node	*left;
-	node	*right;
-	node tmp;
-
-	left = parse_par_or_val(str);
-	while (**str == '*')
-	{
-		(*str)++;
-		right = parse_par_or_val(str);
-		tmp.type = MULTI;
-		tmp.l = left;
-		tmp.r = right;
-		left = new_node(tmp);
-	}
-	return (left);
+    node *left = parse_factor(s);
+    if (!left)
+        return NULL;
+    while (accept(s, '*')) {
+        node *right = parse_factor(s);
+        if (!right) {
+            destroy_tree(left);
+            return NULL;
+        }
+        node n = { .type = MULTI, .l = left, .r = right };
+        left = new_node(n);
+        if (!left)
+            return NULL;
+    }
+    return left;
 }
 
-node	*parse_par_or_val(char **str)
+// ADDED: parsing of an expression (additions)
+static node *parse_expr_r(char **s)
 {
-	node	tmp;
-	node	*left;
-    
-	if (**str == '(')
-	{
-		(*str)++;
-		left = parse_addition(str);
-		(*str)++;
-		return (left);
-		
-	}
-	//TODO!!! parenthesis
-
-	if (isdigit(**str))
-	{
-		tmp.type = VAL;
-		tmp.val = **str - '0';
-		left = new_node(tmp);
-		(*str)++;
-	}
-	return (left);
+    node *left = parse_term(s);
+    if (!left)
+        return NULL;
+    while (accept(s, '+')) {
+        node *right = parse_term(s);
+        if (!right) {
+            destroy_tree(left);
+            return NULL;
+        }
+        node n = { .type = ADD, .l = left, .r = right };
+        left = new_node(n);
+        if (!left)
+            return NULL;
+    }
+    return left;
 }
 
-//...
-/*
-node    *parse_expr(char *s)
+// MODIFIED: parse_expr initializes a local pointer and checks the end of the string
+node *parse_expr(char *s)
 {
-    //...
-
-    if (*s) 
-    {
+    char *p = s;
+    node *ret = parse_expr_r(&p);
+    if (!ret)
+        return NULL;
+    if (*p) {                          
+        unexpected(*p);
         destroy_tree(ret);
         return (NULL);
     }
     return (ret);
 }
-*/
+
 int eval_tree(node *tree)
 {
     switch (tree->type)
@@ -153,52 +157,17 @@ int eval_tree(node *tree)
         case VAL:
             return (tree->val);
     }
-}
-
-int	check_par(char *str)
-{
-	int i = 0;
-	int count = 0;
-	while (*str)
-	{
-		if (str[i] == '(')
-		{
-			count++;
-		}
-		else if (str[i] == ')')
-		{
-			count--;
-		}
-		if (count < 0)
-		{
-			return (')');
-		}
-		str++;
-	}
-	if (count > 0)
-	{
-		return ('(');
-	} 
-	return (0);
+    return 0;  //MODIFIED: added return to suppress compiler warning
 }
 
 int main(int argc, char **argv)
 {
-	int returned_par_val;
-
     if (argc != 2)
-		return (1);
-	returned_par_val = check_par(argv[1]);
-	if (returned_par_val != 0)
-	{
-		if (returned_par_val == ')')
-			return (unexpected(')'), 1);
-		else
-			return (unexpected(0), 1);
-	}
-    node *tree = parse_addition(&argv[1]);
+        return (1);
+    node *tree = parse_expr(argv[1]);
     if (!tree)
         return (1);
     printf("%d\n", eval_tree(tree));
     destroy_tree(tree);
+    return 0; // MODIFIED: return 0 on success
 }
